@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>排班小工具</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f5f5f5;
+            padding: 16px;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        h1 { font-size: 1.8em; text-align: center; margin-bottom: 20px; color: #2c3e50; }
+        .input-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-bottom: 15px;
+            gap: 10px;
+        }
+        .input-row label { font-weight: bold; min-width: 80px; }
+        .input-row input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:active { background: #2980b9; }
+        .error { color: #e74c3c; margin-top: 10px; font-weight: bold; }
+        .table-wrapper {
+            overflow-x: auto;
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 600px;
+        }
+        th, td {
+            padding: 8px 10px;
+            text-align: center;
+            border-bottom: 1px solid #eee;
+            font-size: 14px;
+        }
+        th {
+            background: #ecf0f1;
+            position: sticky;
+            top: 0;
+        }
+        td:first-child, th:first-child { font-weight: bold; background: #f9f9f9; }
+        .stats {
+            margin-top: 20px;
+            background: #fafafa;
+            padding: 15px;
+            border-radius: 8px;
+        }
+        .stats h3 { margin-bottom: 10px; }
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            border-bottom: 1px dashed #ddd;
+        }
+        .note { color: #888; font-size: 0.9em; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📅 轮班排班表生成器</h1>
+        <p style="text-align:center; margin-bottom:20px; color:#666;">规则：1人固定夜班（奇数天上），其余人均衡轮值，夜班后强制休息</p>
+
+        <div class="input-row">
+            <label>👥 总人数：</label>
+            <input type="number" id="peopleCount" placeholder="例如 5" min="2" value="5">
+        </div>
+        <div class="input-row">
+            <label>📆 排班天数：</label>
+            <input type="number" id="daysCount" placeholder="例如 10" min="1" value="10">
+        </div>
+
+        <button onclick="generate()">✨ 生成排班表</button>
+        <div id="error" class="error"></div>
+
+        <div id="output" style="display:none;">
+            <div class="table-wrapper" id="scheduleTable"></div>
+            <div class="stats" id="statsContainer"></div>
+        </div>
+        <p class="note">
+            💡 排班算法在手机本地运行，人数≤10、天数≤30 通常几秒内出结果。<br>
+            📋 第一个人为"夜班专员"，其余为普通员工。
+        </p>
+    </div>
+
+    <script>
+        // ========== 排班算法 ==========
+        function generateSchedule(totalPeople, totalDays) {
+            const SHIFTS = ['正常班', '早班', '中班', '晚班'];
+            const SPECIAL = 0; // 夜班专员索引
+
+            if (totalPeople < 2) return null;
+
+            // 初始化 schedule[day][person] = null
+            const schedule = Array.from({ length: totalDays }, () => new Array(totalPeople).fill(null));
+
+            // 夜班专员固定排班
+            for (let d = 0; d < totalDays; d++) {
+                if ((d + 1) % 2 === 1) {
+                    schedule[d][SPECIAL] = '晚班';
+                } else {
+                    schedule[d][SPECIAL] = '休';
+                }
+            }
+
+            // 收集每天空缺班次
+            const dayNeeds = [];
+            for (let d = 0; d < totalDays; d++) {
+                const needs = [];
+                for (let s = 0; s < SHIFTS.length; s++) {
+                    if (schedule[d][SPECIAL] !== SHIFTS[s]) needs.push(s);
+                }
+                dayNeeds.push(needs);
+            }
+
+            const normalCount = totalPeople - 1;
+            const totalNormalShifts = dayNeeds.reduce((sum, arr) => sum + arr.length, 0);
+            const avg = totalNormalShifts / normalCount;
+            const minWork = Math.max(0, Math.floor(avg) - 1);
+            const maxWork = Math.min(totalDays, Math.ceil(avg) + 1);
+
+            let bestSolution = null;
+            let bestScore = Infinity;
+
+            // 回溯搜索
+            function backtrack(day, idx) {
+                if (day === totalDays) {
+                    // 检查总工作天数是否在范围内
+                    const workCount = new Array(normalCount).fill(0);
+                    const nightCount = new Array(normalCount).fill(0);
+                    for (let d = 0; d < totalDays; d++) {
+                        for (let p = 1; p < totalPeople; p++) {
+                            const shift = schedule[d][p];
+                            if (shift && shift !== '休') {
+                                workCount[p - 1]++;
+                                if (shift === '晚班') nightCount[p - 1]++;
+                            }
+                        }
+                    }
+                    if (!workCount.every(c => c >= minWork && c <= maxWork)) return;
+                    const score = (Math.max(...workCount) - Math.min(...workCount)) * 10 +
+                                  (Math.max(...nightCount) - Math.min(...nightCount));
+                    if (score < bestScore) {
+                        bestSolution = schedule.map(d => [...d]);
+                        bestScore = score;
+                    }
+                    return;
+                }
+
+                if (idx >= dayNeeds[day].length) {
+                    backtrack(day + 1, 0);
+                    return;
+                }
+
+                const sIdx = dayNeeds[day][idx];
+                for (let p = 1; p < totalPeople; p++) {
+                    if (schedule[day][p] !== null) continue;
+                    // 夜班后强制休息：昨天晚班，今天不能上班
+                    if (day > 0 && schedule[day - 1][p] === '晚班') continue;
+                    // 如果今天上晚班，明天先占位为“休”（避免明天被排班）
+                    if (sIdx === 3 && day + 1 < totalDays) {
+                        if (schedule[day + 1][p] !== null) continue; // 已经被占
+                        const old = schedule[day + 1][p];
+                        schedule[day + 1][p] = '休';
+                        schedule[day][p] = SHIFTS[sIdx];
+                        backtrack(day, idx + 1);
+                        schedule[day][p] = null;
+                        schedule[day + 1][p] = old;
+                    } else {
+                        schedule[day][p] = SHIFTS[sIdx];
+                        backtrack(day, idx + 1);
+                        schedule[day][p] = null;
+                    }
+                }
+            }
+
+            backtrack(0, 0);
+            if (!bestSolution) return null;
+
+            // 将 null 统一为“休”
+            for (let d = 0; d < totalDays; d++)
+                for (let p = 0; p < totalPeople; p++)
+                    if (bestSolution[d][p] === null) bestSolution[d][p] = '休';
+
+            // 生成统计
+            const people = ['夜班专员'];
+            for (let i = 2; i <= totalPeople; i++) people.push(`员工${i - 1}`);
+            const stats = people.map((name, idx) => {
+                let total = 0, normal = 0, early = 0, mid = 0, late = 0;
+                for (let d = 0; d < totalDays; d++) {
+                    const shift = bestSolution[d][idx];
+                    if (shift !== '休') total++;
+                    if (shift === '正常班') normal++;
+                    else if (shift === '早班') early++;
+                    else if (shift === '中班') mid++;
+                    else if (shift === '晚班') late++;
+                }
+                return { name, total, normal, early, mid, late };
+            });
+
+            return { schedule: bestSolution, stats, people };
+        }
+
+        // ========== 界面交互 ==========
+        function generate() {
+            const peopleNum = parseInt(document.getElementById('peopleCount').value);
+            const daysNum = parseInt(document.getElementById('daysCount').value);
+            const errorDiv = document.getElementById('error');
+            const outputDiv = document.getElementById('output');
+
+            errorDiv.textContent = '';
+            outputDiv.style.display = 'none';
+
+            if (isNaN(peopleNum) || peopleNum < 2) {
+                errorDiv.textContent = '至少需要2人（含夜班专员）';
+                return;
+            }
+            if (isNaN(daysNum) || daysNum < 1) {
+                errorDiv.textContent = '请输入有效天数';
+                return;
+            }
+
+            const start = Date.now();
+            const result = generateSchedule(peopleNum, daysNum);
+            const elapsed = Date.now() - start;
+
+            if (!result) {
+                errorDiv.textContent = '未找到可行排班！请尝试减少天数或增加人数。';
+                return;
+            }
+
+            // 渲染表格
+            const { schedule, stats, people } = result;
+            let tableHTML = '<table><thead><tr><th>天数</th>';
+            people.forEach(p => tableHTML += `<th>${p}</th>`);
+            tableHTML += '</tr></thead><tbody>';
+            schedule.forEach((dayArr, d) => {
+                tableHTML += '<tr>';
+                tableHTML += `<td>第${d + 1}天</td>`;
+                dayArr.forEach(shift => tableHTML += `<td>${shift}</td>`);
+                tableHTML += '</tr>';
+            });
+            tableHTML += '</tbody></table>';
+            document.getElementById('scheduleTable').innerHTML = tableHTML;
+
+            // 渲染统计
+            let statsHTML = '<h3>📊 统计</h3>';
+            stats.forEach(s => {
+                statsHTML += `<div class="stat-item">
+                    <span><strong>${s.name}</strong></span>
+                    <span>总${s.total}天 | 正常${s.normal} 早${s.early} 中${s.mid} 晚${s.late}</span>
+                </div>`;
+            });
+            statsHTML += `<p style="margin-top:10px;color:#888;">⚡ 计算用时: ${elapsed}ms</p>`;
+            document.getElementById('statsContainer').innerHTML = statsHTML;
+
+            outputDiv.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
