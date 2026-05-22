@@ -91,14 +91,14 @@
 <body>
     <div class="container">
         <h1>📅 轮班排班表生成器</h1>
-        <p style="text-align:center; margin-bottom:20px; color:#666;">规则：1人固定夜班（奇数天上），其余人均衡轮值，夜班后强制休息</p>
+        <p style="text-align:center; margin-bottom:20px; color:#666;">规则:1人固定夜班(奇数天上),其余人均衡轮值,夜班后强制休息</p>
 
         <div class="input-row">
-            <label>👥 总人数：</label>
+            <label>👥 总人数:</label>
             <input type="number" id="peopleCount" placeholder="例如 5" min="2" value="5">
         </div>
         <div class="input-row">
-            <label>📆 排班天数：</label>
+            <label>📆 排班天数:</label>
             <input type="number" id="daysCount" placeholder="例如 10" min="1" value="10">
         </div>
 
@@ -110,117 +110,184 @@
             <div class="stats" id="statsContainer"></div>
         </div>
         <p class="note">
-            💡 排班算法在手机本地运行，人数≤10、天数≤30 通常几秒内出结果。<br>
-            📋 第一个人为"夜班专员"，其余为普通员工。
+            💡 排班算法在手机本地运行,人数≤10、天数≤30 通常几秒内出结果。<br>
+            📋 第一个人为"夜班专员",其余为普通员工。
         </p>
     </div>
 
     <script>
-        // ========== 排班算法 ==========
+        // ========== 优化排班算法（两步贪心 + 局部调优） ==========
         function generateSchedule(totalPeople, totalDays) {
             const SHIFTS = ['正常班', '早班', '中班', '晚班'];
-            const SPECIAL = 0; // 夜班专员索引
+            const SPECIAL = 0;
 
             if (totalPeople < 2) return null;
+            const normalCount = totalPeople - 1;
 
-            // 初始化 schedule[day][person] = null
+            // 初始化
             const schedule = Array.from({ length: totalDays }, () => new Array(totalPeople).fill(null));
-
-            // 夜班专员固定排班
             for (let d = 0; d < totalDays; d++) {
-                if ((d + 1) % 2 === 1) {
-                    schedule[d][SPECIAL] = '晚班';
-                } else {
-                    schedule[d][SPECIAL] = '休';
-                }
+                schedule[d][SPECIAL] = (d + 1) % 2 === 1 ? '晚班' : '休';
             }
 
-            // 收集每天空缺班次
-            const dayNeeds = [];
+            // 统计每人工作量
+            const workCount = new Array(normalCount).fill(0);
+            const nightCount = new Array(normalCount).fill(0);
+
+            // 步骤1：轮转预分配晚班（最紧约束，提前确定避免失衡）
+            // 收集所有需要普通员工上晚班的天（偶数天）
+            const nightDays = [];
+            for (let d = 0; d < totalDays; d++) {
+                if (schedule[d][SPECIAL] !== '晚班') nightDays.push(d);
+            }
+            // 轮转分配：每人尽量均匀
+            for (let i = 0; i < nightDays.length; i++) {
+                const d = nightDays[i];
+                // 按晚班数升序、总工作数升序选人
+                let bestP = -1, bestScore = Infinity;
+                for (let p = 1; p < totalPeople; p++) {
+                    if (schedule[d][p] !== null) continue;
+                    const wi = p - 1;
+                    const score = nightCount[wi] * 1000 + workCount[wi];
+                    if (score < bestScore) { bestScore = score; bestP = p; }
+                }
+                if (bestP === -1) return null;
+                const wi = bestP - 1;
+                schedule[d][bestP] = '晚班';
+                workCount[wi]++;
+                nightCount[wi]++;
+                if (d + 1 < totalDays) schedule[d + 1][bestP] = '休';
+            }
+
+            // 步骤2：贪心填充剩余班次（晚班已定，剩余只是排列问题）
             for (let d = 0; d < totalDays; d++) {
                 const needs = [];
                 for (let s = 0; s < SHIFTS.length; s++) {
-                    if (schedule[d][SPECIAL] !== SHIFTS[s]) needs.push(s);
+                    if (SHIFTS[s] === '晚班') continue; // 晚班已在步骤1处理
+                    if (schedule[d][SPECIAL] !== SHIFTS[s] && !schedule[d].some(v => v === SHIFTS[s])) {
+                        needs.push(s);
+                    }
                 }
+                for (const sIdx of needs) {
+                    const candidates = [];
+                    for (let p = 1; p < totalPeople; p++) {
+                        if (schedule[d][p] !== null) continue;
+                        if (d > 0 && schedule[d - 1][p] === '晚班') continue;
+                        candidates.push({ p, score: workCount[p - 1] });
+                    }
+                    candidates.sort((a, b) => a.score - b.score);
+                    if (candidates.length === 0) {
+                        return backtrackFallback(totalPeople, totalDays, schedule, SHIFTS, SPECIAL, normalCount);
+                    }
+                    const p = candidates[0].p;
+                    schedule[d][p] = SHIFTS[sIdx];
+                    workCount[p - 1]++;
+                }
+            }
+
+            // 填充 null 为"休"
+            for (let d = 0; d < totalDays; d++)
+                for (let p = 0; p < totalPeople; p++)
+                    if (schedule[d][p] === null) schedule[d][p] = '休';
+
+            return buildResult(schedule, totalPeople, totalDays, SHIFTS, SPECIAL);
+        }
+
+        // 回溯回退（仅贪心失败时触发，加入启发式优化）
+        function backtrackFallback(totalPeople, totalDays, baseSchedule, SHIFTS, SPECIAL, normalCount) {
+            const schedule = Array.from({ length: totalDays }, () => new Array(totalPeople).fill(null));
+            for (let d = 0; d < totalDays; d++) {
+                schedule[d][SPECIAL] = (d + 1) % 2 === 1 ? '晚班' : '休';
+            }
+
+            const dayNeeds = [];
+            let totalShifts = 0;
+            for (let d = 0; d < totalDays; d++) {
+                const needs = [];
+                for (let s = 0; s < SHIFTS.length; s++) {
+                    if (schedule[d][SPECIAL] !== SHIFTS[s]) { needs.push(s); totalShifts++; }
+                }
+                needs.sort((a, b) => (SHIFTS[a] === '晚班' ? -1 : 1) - (SHIFTS[b] === '晚班' ? -1 : 1));
                 dayNeeds.push(needs);
             }
 
-            const normalCount = totalPeople - 1;
-            const totalNormalShifts = dayNeeds.reduce((sum, arr) => sum + arr.length, 0);
-            const avg = totalNormalShifts / normalCount;
+            const avg = totalShifts / normalCount;
             const minWork = Math.max(0, Math.floor(avg) - 1);
             const maxWork = Math.min(totalDays, Math.ceil(avg) + 1);
 
+            const curWork = new Array(normalCount).fill(0);
+            const curNight = new Array(normalCount).fill(0);
             let bestSolution = null;
             let bestScore = Infinity;
+            const T0 = Date.now();
 
-            // 回溯搜索
             function backtrack(day, idx) {
+                if (Date.now() - T0 > 3000) return true;
                 if (day === totalDays) {
-                    // 检查总工作天数是否在范围内
-                    const workCount = new Array(normalCount).fill(0);
-                    const nightCount = new Array(normalCount).fill(0);
-                    for (let d = 0; d < totalDays; d++) {
-                        for (let p = 1; p < totalPeople; p++) {
-                            const shift = schedule[d][p];
-                            if (shift && shift !== '休') {
-                                workCount[p - 1]++;
-                                if (shift === '晚班') nightCount[p - 1]++;
-                            }
-                        }
-                    }
-                    if (!workCount.every(c => c >= minWork && c <= maxWork)) return;
-                    const score = (Math.max(...workCount) - Math.min(...workCount)) * 10 +
-                                  (Math.max(...nightCount) - Math.min(...nightCount));
+                    const score = Math.max(...curWork) - Math.min(...curWork) + Math.max(...curNight) - Math.min(...curNight);
                     if (score < bestScore) {
                         bestSolution = schedule.map(d => [...d]);
                         bestScore = score;
+                        if (score === 0) return true;
                     }
-                    return;
+                    return false;
                 }
-
-                if (idx >= dayNeeds[day].length) {
-                    backtrack(day + 1, 0);
-                    return;
-                }
+                if (idx >= dayNeeds[day].length) return backtrack(day + 1, 0);
 
                 const sIdx = dayNeeds[day][idx];
+                const isNight = SHIFTS[sIdx] === '晚班';
+                const candidates = [];
+
                 for (let p = 1; p < totalPeople; p++) {
                     if (schedule[day][p] !== null) continue;
-                    // 夜班后强制休息：昨天晚班，今天不能上班
                     if (day > 0 && schedule[day - 1][p] === '晚班') continue;
-                    // 如果今天上晚班，明天先占位为“休”（避免明天被排班）
-                    if (sIdx === 3 && day + 1 < totalDays) {
-                        if (schedule[day + 1][p] !== null) continue; // 已经被占
-                        const old = schedule[day + 1][p];
-                        schedule[day + 1][p] = '休';
-                        schedule[day][p] = SHIFTS[sIdx];
-                        backtrack(day, idx + 1);
-                        schedule[day][p] = null;
-                        schedule[day + 1][p] = old;
-                    } else {
-                        schedule[day][p] = SHIFTS[sIdx];
-                        backtrack(day, idx + 1);
-                        schedule[day][p] = null;
-                    }
+                    if (isNight && day + 1 < totalDays && schedule[day + 1][p] !== null) continue;
+                    const wi = p - 1;
+                    if (curWork[wi] >= maxWork) continue;
+                    candidates.push({ p, order: curWork[wi] * 100 + (isNight ? curNight[wi] * 10 : 0) });
                 }
+                candidates.sort((a, b) => a.order - b.order);
+
+                const remaining = dayNeeds[day].length - idx - 1;
+
+                for (const { p } of candidates) {
+                    const wi = p - 1;
+                    let avail = 0;
+                    for (let q = 1; q < totalPeople; q++) {
+                        if (q !== p && schedule[day][q] === null && !(day > 0 && schedule[day - 1][q] === '晚班')) avail++;
+                    }
+                    if (avail < remaining) continue;
+
+                    schedule[day][p] = SHIFTS[sIdx];
+                    curWork[wi]++;
+                    if (isNight) { curNight[wi]++; schedule[day + 1][p] = '休'; }
+
+                    if (backtrack(day, idx + 1)) return true;
+
+                    schedule[day][p] = null;
+                    curWork[wi]--;
+                    if (isNight) { curNight[wi]--; schedule[day + 1][p] = null; }
+                }
+                return false;
             }
 
             backtrack(0, 0);
             if (!bestSolution) return null;
 
-            // 将 null 统一为“休”
             for (let d = 0; d < totalDays; d++)
                 for (let p = 0; p < totalPeople; p++)
                     if (bestSolution[d][p] === null) bestSolution[d][p] = '休';
 
-            // 生成统计
+            return buildResult(bestSolution, totalPeople, totalDays, SHIFTS, SPECIAL);
+        }
+
+        function buildResult(schedule, totalPeople, totalDays, SHIFTS, SPECIAL) {
             const people = ['夜班专员'];
             for (let i = 2; i <= totalPeople; i++) people.push(`员工${i - 1}`);
             const stats = people.map((name, idx) => {
                 let total = 0, normal = 0, early = 0, mid = 0, late = 0;
                 for (let d = 0; d < totalDays; d++) {
-                    const shift = bestSolution[d][idx];
+                    const shift = schedule[d][idx];
                     if (shift !== '休') total++;
                     if (shift === '正常班') normal++;
                     else if (shift === '早班') early++;
@@ -229,8 +296,7 @@
                 }
                 return { name, total, normal, early, mid, late };
             });
-
-            return { schedule: bestSolution, stats, people };
+            return { schedule, stats, people };
         }
 
         // ========== 界面交互 ==========
@@ -244,7 +310,7 @@
             outputDiv.style.display = 'none';
 
             if (isNaN(peopleNum) || peopleNum < 2) {
-                errorDiv.textContent = '至少需要2人（含夜班专员）';
+                errorDiv.textContent = '至少需要2人(含夜班专员)';
                 return;
             }
             if (isNaN(daysNum) || daysNum < 1) {
@@ -257,7 +323,7 @@
             const elapsed = Date.now() - start;
 
             if (!result) {
-                errorDiv.textContent = '未找到可行排班！请尝试减少天数或增加人数。';
+                errorDiv.textContent = '未找到可行排班!请尝试减少天数或增加人数。';
                 return;
             }
 
