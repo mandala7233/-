@@ -91,11 +91,11 @@
 <body>
     <div class="container">
         <h1>📅 轮班排班表生成器</h1>
-        <p style="text-align:center; margin-bottom:20px; color:#666;">规则:夜班专员上一休二,空档夜班由其他人轮值,夜班次日强制休息,白天三班均衡轮排</p>
+        <p style="text-align:center; margin-bottom:20px; color:#666;">规则:6人以上专员上一休二,5人以下上一天休一天;空档夜班轮值;夜班次日强制休息;白天三班按工时均衡</p>
 
         <div class="input-row">
             <label>👥 总人数:</label>
-            <input type="number" id="peopleCount" placeholder="至少6" min="6" value="6">
+            <input type="number" id="peopleCount" placeholder="至少5" min="5" value="5">
         </div>
         <div class="input-row">
             <label>📆 排班天数:</label>
@@ -111,32 +111,32 @@
         </div>
         <p class="note">
             💡 排班算法在手机本地运行,毫秒级出结果。<br>
-            📋 第一个人为"夜班专员"(上一休二),其余为普通员工。<br>
-            ⚠️ 至少需要6人(含夜班专员),否则无法满足规则约束。
+            📋 第一个人为"夜班专员",其余为普通员工。<br>
+            🔄 6人及以上:专员上一休二;5人及以下:专员上一天休一天(保证人手够用)。
         </p>
     </div>
 
     <script>
-        // ========== 新排班算法：夜班专员上一休二 + 均衡轮排 ==========
+        // ========== 新排班算法:夜班专员上一休二 + 均衡轮排 ==========
         function generateSchedule(totalPeople, totalDays) {
             const SHIFTS = ['正常班', '早班', '午班', '晚班'];
             const SHIFT_HOURS = [8, 5.5, 6, 14.5]; // 正常班/早班/午班/夜班时长
             const SPECIAL = 0;
 
-            if (totalPeople < 6) return null; // 至少6人才满足约束
+            if (totalPeople < 5) return null;
             const normalCount = totalPeople - 1;
+            const useRestTwo = totalPeople >= 6; // 6人+上一休二,5人以下上一天休一天
 
-            // 初始化
+            // 初始化 + 专员排班
             const schedule = Array.from({ length: totalDays }, () => new Array(totalPeople).fill(null));
-            // 夜班专员：上一休二（第1,4,7,10...天上晚班）
             for (let d = 0; d < totalDays; d++) {
-                schedule[d][SPECIAL] = (d % 3 === 0) ? '晚班' : '休';
+                schedule[d][SPECIAL] = useRestTwo ? ((d % 3 === 0) ? '晚班' : '休') : ((d % 2 === 0) ? '晚班' : '休');
             }
 
             const workHours = new Array(normalCount).fill(0); // 改为计时长
             const nightCount = new Array(normalCount).fill(0);
 
-            // 步骤1：收集专员不上晚班的天，轮转分配给普通员工
+            // 步骤1:收集专员不上晚班的天,轮转分配给普通员工
             const nightDays = [];
             for (let d = 0; d < totalDays; d++) {
                 if (schedule[d][SPECIAL] !== '晚班') nightDays.push(d);
@@ -144,16 +144,16 @@
 
             for (let i = 0; i < nightDays.length; i++) {
                 const d = nightDays[i];
-                // 找最合适的晚班人选：晚班数少 + 总工作量少
+                // 找最合适的晚班人选:晚班数少 + 总工作量少
                 let bestP = -1, bestScore = Infinity;
                 for (let p = 1; p < totalPeople; p++) {
                     if (schedule[d][p] !== null) continue; // 已被占用
                     if (d > 0 && schedule[d - 1][p] === '晚班') continue; // 昨天晚班
                     const wi = p - 1;
-                    const score = nightCount[wi] * 1000 - workHours[wi]; // 时长多者优先得晚班，强制休息拉平
+                    const score = nightCount[wi] * 1000 - workHours[wi]; // 时长多者优先得晚班,强制休息拉平
                     if (score < bestScore) { bestScore = score; bestP = p; }
                 }
-                if (bestP === -1) return null; // 无人可用，约束冲突
+                if (bestP === -1) return null; // 无人可用,约束冲突
                 const wi = bestP - 1;
                 schedule[d][bestP] = '晚班';
                 workHours[wi] += 14.5;
@@ -163,7 +163,7 @@
                 }
             }
 
-            // 步骤2：贪心填充白天三个班次
+            // 步骤2:贪心填充白天三个班次
             for (let d = 0; d < totalDays; d++) {
                 // 收集当天需要的白天班次
                 const needs = [];
@@ -189,7 +189,7 @@
                 }
             }
 
-            // 步骤3：后处理调优——交换班次拉平时长
+            // 步骤3:后处理调优--交换班次拉平时长
             for (let iter = 0; iter < 200; iter++) {
                 // 找时长最高和最低的人
                 let maxH = -1, minH = Infinity, maxP = -1, minP = -1;
@@ -229,11 +229,12 @@
             return buildResult(schedule, totalPeople, totalDays, SHIFTS, SPECIAL);
         }
 
-        // 回溯回退（仅贪心失败时触发）
+        // 回溯回退(仅贪心失败时触发)
         function backtrackFallback(totalPeople, totalDays, baseSchedule, SHIFTS, SPECIAL, normalCount) {
+            const useRestTwo = totalPeople >= 6;
             const schedule = Array.from({ length: totalDays }, () => new Array(totalPeople).fill(null));
             for (let d = 0; d < totalDays; d++) {
-                schedule[d][SPECIAL] = (d % 3 === 0) ? '晚班' : '休';
+                schedule[d][SPECIAL] = useRestTwo ? ((d % 3 === 0) ? '晚班' : '休') : ((d % 2 === 0) ? '晚班' : '休');
             }
 
             const dayNeeds = [];
@@ -347,8 +348,8 @@
             errorDiv.textContent = '';
             outputDiv.style.display = 'none';
 
-            if (isNaN(peopleNum) || peopleNum < 6) {
-                errorDiv.textContent = '新规则下至少需要6人（含夜班专员），请增加人数。原因：上一休二导致专员休日集中，需预留足够人力填补。';
+            if (isNaN(peopleNum) || peopleNum < 5) {
+                errorDiv.textContent = '至少需要5人（含夜班专员）。4人无法满足排班约束（专员休日需4个岗位但仅3人可用）。';
                 return;
             }
             if (isNaN(daysNum) || daysNum < 1) {
@@ -380,7 +381,7 @@
             document.getElementById('scheduleTable').innerHTML = tableHTML;
 
             // 渲染统计
-            let statsHTML = '<h3>📊 统计（目标：每人总时长尽量接近）</h3>';
+            let statsHTML = '<h3>📊 统计(目标:每人总时长尽量接近)</h3>';
             stats.forEach(s => {
                 statsHTML += `<div class="stat-item">
                     <span><strong>${s.name}</strong></span>
