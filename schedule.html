@@ -119,7 +119,8 @@
     <script>
         // ========== 新排班算法：夜班专员上一休二 + 均衡轮排 ==========
         function generateSchedule(totalPeople, totalDays) {
-            const SHIFTS = ['正常班', '早班', '中班', '晚班'];
+            const SHIFTS = ['正常班', '早班', '午班', '晚班'];
+            const SHIFT_HOURS = [8, 5.5, 6, 14.5]; // 正常班/早班/午班/夜班时长
             const SPECIAL = 0;
 
             if (totalPeople < 6) return null; // 至少6人才满足约束
@@ -132,7 +133,7 @@
                 schedule[d][SPECIAL] = (d % 3 === 0) ? '晚班' : '休';
             }
 
-            const workCount = new Array(normalCount).fill(0);
+            const workHours = new Array(normalCount).fill(0); // 改为计时长
             const nightCount = new Array(normalCount).fill(0);
 
             // 步骤1：收集专员不上晚班的天，轮转分配给普通员工
@@ -149,13 +150,13 @@
                     if (schedule[d][p] !== null) continue; // 已被占用
                     if (d > 0 && schedule[d - 1][p] === '晚班') continue; // 昨天晚班
                     const wi = p - 1;
-                    const score = nightCount[wi] * 1000 + workCount[wi];
+                    const score = nightCount[wi] * 1000 - workHours[wi]; // 时长多者优先得晚班，强制休息拉平
                     if (score < bestScore) { bestScore = score; bestP = p; }
                 }
                 if (bestP === -1) return null; // 无人可用，约束冲突
                 const wi = bestP - 1;
                 schedule[d][bestP] = '晚班';
-                workCount[wi]++;
+                workHours[wi] += 14.5;
                 nightCount[wi]++;
                 if (d + 1 < totalDays && schedule[d + 1][bestP] === null) {
                     schedule[d + 1][bestP] = '休'; // 强制次日休息
@@ -176,7 +177,7 @@
                     for (let p = 1; p < totalPeople; p++) {
                         if (schedule[d][p] !== null) continue;
                         if (d > 0 && schedule[d - 1][p] === '晚班') continue;
-                        candidates.push({ p, score: workCount[p - 1] });
+                        candidates.push({ p, score: workHours[p - 1] });
                     }
                     candidates.sort((a, b) => a.score - b.score);
                     if (candidates.length === 0) {
@@ -184,8 +185,40 @@
                     }
                     const p = candidates[0].p;
                     schedule[d][p] = SHIFTS[sIdx];
-                    workCount[p - 1]++;
+                    workHours[p - 1] += SHIFT_HOURS[sIdx];
                 }
+            }
+
+            // 步骤3：后处理调优——交换班次拉平时长
+            for (let iter = 0; iter < 200; iter++) {
+                // 找时长最高和最低的人
+                let maxH = -1, minH = Infinity, maxP = -1, minP = -1;
+                for (let p = 1; p < totalPeople; p++) {
+                    let h = 0;
+                    for (let d = 0; d < totalDays; d++) {
+                        const s = schedule[d][p];
+                        if (s && s !== '休') {
+                            const si = SHIFTS.indexOf(s);
+                            if (si >= 0) h += SHIFT_HOURS[si];
+                        }
+                    }
+                    if (h > maxH) { maxH = h; maxP = p; }
+                    if (h < minH) { minH = h; minP = p; }
+                }
+                if (maxP === minP || maxH - minH < 2) break;
+                // 尝试找一个高阶的白天班次换给低阶
+                let swapped = false;
+                for (let d = 0; d < totalDays && !swapped; d++) {
+                    const sMax = schedule[d][maxP];
+                    if (!sMax || sMax === '休' || sMax === '晚班') continue;
+                    if (schedule[d][minP] !== null) continue;
+                    if (d > 0 && schedule[d - 1][minP] === '晚班') continue;
+                    // 交换
+                    schedule[d][minP] = sMax;
+                    schedule[d][maxP] = null;
+                    swapped = true;
+                }
+                if (!swapped) break;
             }
 
             // 填充 null 为"休"
@@ -290,16 +323,16 @@
             const people = ['夜班专员'];
             for (let i = 2; i <= totalPeople; i++) people.push(`员工${i - 1}`);
             const stats = people.map((name, idx) => {
-                let total = 0, normal = 0, early = 0, mid = 0, late = 0;
+                let total = 0, normal = 0, early = 0, noon = 0, late = 0, hours = 0;
                 for (let d = 0; d < totalDays; d++) {
                     const shift = schedule[d][idx];
                     if (shift !== '休') total++;
-                    if (shift === '正常班') normal++;
-                    else if (shift === '早班') early++;
-                    else if (shift === '中班') mid++;
-                    else if (shift === '晚班') late++;
+                    if (shift === '正常班') { normal++; hours += 8; }
+                    else if (shift === '早班') { early++; hours += 5.5; }
+                    else if (shift === '午班') { noon++; hours += 6; }
+                    else if (shift === '晚班') { late++; hours += 14.5; }
                 }
-                return { name, total, normal, early, mid, late };
+                return { name, total, normal, early, noon, late, hours };
             });
             return { schedule, stats, people };
         }
@@ -347,11 +380,11 @@
             document.getElementById('scheduleTable').innerHTML = tableHTML;
 
             // 渲染统计
-            let statsHTML = '<h3>📊 统计</h3>';
+            let statsHTML = '<h3>📊 统计（目标：每人总时长尽量接近）</h3>';
             stats.forEach(s => {
                 statsHTML += `<div class="stat-item">
                     <span><strong>${s.name}</strong></span>
-                    <span>总${s.total}天 | 正常${s.normal} 早${s.early} 中${s.mid} 晚${s.late}</span>
+                    <span>总${s.total}天 | 正${s.normal} 早${s.early} 午${s.noon} 晚${s.late} | <strong>${s.hours.toFixed(1)}h</strong></span>
                 </div>`;
             });
             statsHTML += `<p style="margin-top:10px;color:#888;">⚡ 计算用时: ${elapsed}ms</p>`;
